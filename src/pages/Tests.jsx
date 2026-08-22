@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { Plus, Search, Edit, Trash2, Microscope, X } from 'lucide-react';
-import { fetchTests, createTest, updateTest, deleteTest } from '../api/adminApi';
+import { fetchTests, fetchTestCategories, createTest, updateTest, deleteTest, toggleTestStatus } from '../api/adminApi';
 import { TableSkeleton } from '../components/ui/Skeleton';
 import EmptyState from '../components/ui/EmptyState';
 import ErrorState from '../components/ui/ErrorState';
@@ -8,8 +8,29 @@ import Modal from '../components/ui/Modal';
 import { useToast } from '../context/ToastContext';
 import '../styles/admin-theme.css';
 
+const DEFAULT_CATEGORIES = [
+  'Blood Tests',
+  'Diabetes',
+  'Thyroid',
+  'Liver',
+  'Kidney',
+  'Cardiac',
+  'Vitamins',
+  'Hormones',
+  'Allergy',
+  'Infection',
+  'Health Checkup',
+  'Biochemistry',
+  'Hematology',
+  'Endocrinology',
+  'Serology / Immunology',
+  'Microbiology',
+  'Radiology',
+];
+
 export default function Tests() {
   const [tests, setTests] = useState([]);
+  const [dbCategories, setDbCategories] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [searchTerm, setSearchTerm] = useState('');
@@ -21,7 +42,8 @@ export default function Tests() {
 
   const [formData, setFormData] = useState({
     name: '',
-    category: 'Biochemistry',
+    categorySelect: 'Biochemistry',
+    customCategory: '',
     shortDescription: '',
     detailedDescription: '',
     active: true,
@@ -31,8 +53,14 @@ export default function Tests() {
     setLoading(true);
     setError('');
     try {
-      const data = await fetchTests();
-      setTests(data || []);
+      const [testsData, catsData] = await Promise.all([
+        fetchTests(),
+        fetchTestCategories(),
+      ]);
+      setTests(testsData || []);
+      if (Array.isArray(catsData)) {
+        setDbCategories(catsData);
+      }
     } catch (err) {
       setError('Failed to fetch diagnostic tests catalogue from server.');
     } finally {
@@ -44,11 +72,21 @@ export default function Tests() {
     loadTestsData();
   }, []);
 
+  // Merge default categories with backend database categories
+  const allCategories = Array.from(
+    new Set([
+      ...DEFAULT_CATEGORIES,
+      ...(dbCategories || []),
+      ...tests.map((t) => t.category).filter(Boolean),
+    ])
+  ).sort((a, b) => a.localeCompare(b));
+
   const openAddModal = () => {
     setEditingTest(null);
     setFormData({
       name: '',
-      category: 'Biochemistry',
+      categorySelect: allCategories[0] || 'Biochemistry',
+      customCategory: '',
       shortDescription: '',
       detailedDescription: '',
       active: true,
@@ -58,9 +96,12 @@ export default function Tests() {
 
   const openEditModal = (test) => {
     setEditingTest(test);
+    const existingCat = test.category || 'Biochemistry';
+    const isKnown = allCategories.includes(existingCat);
     setFormData({
       name: test.name || '',
-      category: test.category || 'Biochemistry',
+      categorySelect: isKnown ? existingCat : 'OTHER',
+      customCategory: isKnown ? '' : existingCat,
       shortDescription: test.shortDescription || '',
       detailedDescription: test.detailedDescription || '',
       active: test.active !== false,
@@ -70,24 +111,54 @@ export default function Tests() {
 
   const handleSave = async (e) => {
     e.preventDefault();
-    if (!formData.name) return;
+    if (!formData.name.trim()) return;
+
+    let finalCategory = formData.categorySelect;
+    if (formData.categorySelect === 'OTHER') {
+      if (!formData.customCategory.trim()) {
+        showToast('Please enter a custom category name', 'error');
+        return;
+      }
+      finalCategory = formData.customCategory.trim();
+    }
+
+    const payload = {
+      name: formData.name.trim(),
+      category: finalCategory,
+      shortDescription: formData.shortDescription ? formData.shortDescription.trim() : '',
+      detailedDescription: formData.detailedDescription ? formData.detailedDescription.trim() : '',
+      active: formData.active,
+    };
 
     setActionLoading(true);
     try {
       if (editingTest) {
-        const updated = await updateTest(editingTest.id, formData);
+        const updated = await updateTest(editingTest.id, payload);
         setTests((prev) => prev.map((t) => (t.id === editingTest.id ? updated : t)));
         showToast('Test updated successfully');
       } else {
-        const created = await createTest(formData);
+        const created = await createTest(payload);
         setTests((prev) => [...prev, created]);
-        showToast('New test added to catalogue');
+        showToast('New test added to master catalogue');
       }
+      // Re-fetch dynamic categories from PostgreSQL
+      const refreshedCats = await fetchTestCategories();
+      if (Array.isArray(refreshedCats)) setDbCategories(refreshedCats);
       setIsModalOpen(false);
     } catch (err) {
-      showToast('Failed to save test', 'error');
+      showToast('Failed to save test to database', 'error');
     } finally {
       setActionLoading(false);
+    }
+  };
+
+  const handleToggleStatus = async (test) => {
+    try {
+      const updated = await toggleTestStatus(test.id);
+      setTests((prev) => prev.map((t) => (t.id === test.id ? updated : t)));
+      showToast(`Test "${test.name}" status updated`);
+    } catch (err) {
+      showToast('Failed to update status', 'error');
     }
   };
 
@@ -97,8 +168,11 @@ export default function Tests() {
     try {
       await deleteTest(deleteTarget.id);
       setTests((prev) => prev.filter((t) => t.id !== deleteTarget.id));
-      showToast(`Test "${deleteTarget.name}" deleted successfully`);
+      showToast(`Test "${deleteTarget.name}" deleted successfully from PostgreSQL`);
       setDeleteTarget(null);
+      // Refresh categories after deletion
+      const refreshedCats = await fetchTestCategories();
+      if (Array.isArray(refreshedCats)) setDbCategories(refreshedCats);
     } catch (err) {
       showToast('Failed to delete test', 'error');
     } finally {
@@ -117,7 +191,7 @@ export default function Tests() {
       <div className="page-title-row">
         <div>
           <h1 className="page-h1">Diagnostic Test Master</h1>
-          <p className="page-subtitle">Manage individual pathology & radiology laboratory test parameters</p>
+          <p className="page-subtitle">Manage database-driven pathology & radiology laboratory test parameters</p>
         </div>
 
         <button className="btn btn-primary" onClick={openAddModal}>
@@ -165,11 +239,17 @@ export default function Tests() {
                     {test.shortDescription || test.detailedDescription || 'N/A'}
                   </td>
                   <td>
-                    {test.active !== false ? (
-                      <span className="badge badge-active">Active</span>
-                    ) : (
-                      <span className="badge badge-inactive">Deactivated</span>
-                    )}
+                    <button
+                      onClick={() => handleToggleStatus(test)}
+                      style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}
+                      title="Click to toggle status"
+                    >
+                      {test.active !== false ? (
+                        <span className="badge badge-active">Active</span>
+                      ) : (
+                        <span className="badge badge-inactive">Deactivated</span>
+                      )}
+                    </button>
                   </td>
                   <td>
                     <div style={{ display: 'flex', gap: '0.5rem' }}>
@@ -223,11 +303,11 @@ export default function Tests() {
             <form onSubmit={handleSave}>
               <div className="modal-body">
                 <div className="form-group">
-                  <label className="form-label">Test Name *</label>
+                  <label className="form-label">Test Parameter Name *</label>
                   <input
                     type="text"
                     required
-                    placeholder="e.g. HbA1c (Glycated Hemoglobin)"
+                    placeholder="e.g. Stool Routine Examination"
                     className="form-input"
                     value={formData.name}
                     onChange={(e) => setFormData({ ...formData, name: e.target.value })}
@@ -235,20 +315,37 @@ export default function Tests() {
                 </div>
 
                 <div className="form-group">
-                  <label className="form-label">Category</label>
+                  <label className="form-label">Category *</label>
                   <select
                     className="form-select"
-                    value={formData.category}
-                    onChange={(e) => setFormData({ ...formData, category: e.target.value })}
+                    value={formData.categorySelect}
+                    onChange={(e) => setFormData({ ...formData, categorySelect: e.target.value })}
                   >
-                    <option value="Biochemistry">Biochemistry</option>
-                    <option value="Hematology">Hematology</option>
-                    <option value="Endocrinology">Endocrinology</option>
-                    <option value="Serology / Immunology">Serology / Immunology</option>
-                    <option value="Microbiology">Microbiology</option>
-                    <option value="Radiology">Radiology</option>
+                    {allCategories.map((cat) => (
+                      <option key={cat} value={cat}>
+                        {cat}
+                      </option>
+                    ))}
+                    <option value="OTHER">+ Other (Create New Category...)</option>
                   </select>
                 </div>
+
+                {formData.categorySelect === 'OTHER' && (
+                  <div className="form-group" style={{ background: '#f8fafc', padding: '0.75rem', borderRadius: '8px', border: '1px solid #e2e8f0' }}>
+                    <label className="form-label" style={{ color: 'var(--accent-blue)', fontWeight: 600 }}>New Category Name *</label>
+                    <input
+                      type="text"
+                      required
+                      placeholder="e.g. Stool Analysis"
+                      className="form-input"
+                      value={formData.customCategory}
+                      onChange={(e) => setFormData({ ...formData, customCategory: e.target.value })}
+                    />
+                    <small style={{ color: 'var(--text-muted)', fontSize: '0.75rem', marginTop: '0.25rem', display: 'block' }}>
+                      This category will be saved to PostgreSQL and available for future tests.
+                    </small>
+                  </div>
+                )}
 
                 <div className="form-group">
                   <label className="form-label">Short Description</label>

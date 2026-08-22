@@ -59,6 +59,19 @@ export const adminLogin = async (emailOrUsername, password) => {
   return response.data;
 };
 
+export const adminLogout = async () => {
+  try {
+    const token = localStorage.getItem('alzain_admin_token');
+    if (token) {
+      await axios.post(`${BASE_URL}/auth/admin/logout`, {}, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+    }
+  } catch (e) {
+    // Ignore server error on logout
+  }
+};
+
 export const forgotPassword = async (email) => {
   const response = await axios.post(`${BASE_URL}/auth/admin/forgot-password`, { email });
   return response.data;
@@ -137,6 +150,21 @@ export const updateTest = async (id, testData) => {
 
 export const deleteTest = async (id) => {
   const response = await adminApi.delete(`/tests/${id}`);
+  return response.data;
+};
+
+export const fetchTestCategories = async () => {
+  try {
+    const response = await adminApi.get('/tests/categories');
+    return response.data;
+  } catch (error) {
+    console.warn('Failed to fetch test categories from backend:', error.message);
+    return [];
+  }
+};
+
+export const toggleTestStatus = async (id) => {
+  const response = await adminApi.patch(`/tests/${id}/toggle-status`);
   return response.data;
 };
 

@@ -15,6 +15,7 @@ import {
   Bell,
   Star,
 } from 'lucide-react';
+import { adminLogout } from '../api/adminApi';
 import '../styles/admin-theme.css';
 
 export default function AdminLayout() {
@@ -32,7 +33,8 @@ export default function AdminLayout() {
     }
   }
 
-  const handleLogout = () => {
+  const handleLogout = async () => {
+    await adminLogout();
     localStorage.removeItem('alzain_admin_token');
     localStorage.removeItem('alzain_admin_user');
     navigate('/login');
